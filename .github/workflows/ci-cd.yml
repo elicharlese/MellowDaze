@@ -1,0 +1,110 @@
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        node-version: [18.x, 20.x]
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Use Node.js ${{ matrix.node-version }}
+      uses: actions/setup-node@v4
+      with:
+        node-version: ${{ matrix.node-version }}
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Run TypeScript check
+      run: npx tsc --noEmit
+      
+    - name: Run ESLint
+      run: npm run lint
+      
+    - name: Run tests
+      run: npm test
+      env:
+        NODE_ENV: test
+        
+    - name: Build application
+      run: npm run build
+      env:
+        NEXT_PUBLIC_SUPABASE_URL: ${{ secrets.NEXT_PUBLIC_SUPABASE_URL }}
+        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${{ secrets.NEXT_PUBLIC_SUPABASE_ANON_KEY }}
+        
+  security:
+    runs-on: ubuntu-latest
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Use Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20.x'
+        cache: 'npm'
+        
+    - name: Install dependencies
+      run: npm ci
+      
+    - name: Run security audit
+      run: npm audit --audit-level high
+      
+    - name: Check for vulnerabilities
+      run: npx audit-ci --config .audit-ci.json
+      
+  deploy:
+    needs: [test, security]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Deploy to Vercel
+      uses: amondnet/vercel-action@v25
+      with:
+        vercel-token: ${{ secrets.VERCEL_TOKEN }}
+        vercel-org-id: ${{ secrets.VERCEL_ORG_ID }}
+        vercel-project-id: ${{ secrets.VERCEL_PROJECT_ID }}
+        vercel-args: '--prod'
+        
+    - name: Post-deployment tests
+      run: |
+        sleep 30  # Wait for deployment to be ready
+        # Add post-deployment test commands here
+        echo "Running post-deployment tests..."
+        # curl -f https://your-domain.vercel.app/api/health || exit 1
+        
+  notify:
+    needs: [deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    
+    steps:
+    - name: Notify deployment status
+      uses: 8398a7/action-slack@v3
+      with:
+        status: ${{ job.status }}
+        channel: '#deployments'
+        webhook_url: ${{ secrets.SLACK_WEBHOOK }}
+        text: |
+          Deployment ${{ job.status }} for MellowDaze
+          Branch: ${{ github.ref }}
+          Commit: ${{ github.sha }}
+      env:
+        SLACK_WEBHOOK: ${{ secrets.SLACK_WEBHOOK }}
+      if: env.SLACK_WEBHOOK != ''
